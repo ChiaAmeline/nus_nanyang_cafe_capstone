@@ -6,6 +6,7 @@ install.packages("polyglotr", dependencies = TRUE)
 install.packages("readxl", dependencies = TRUE)
 install.packages("numberize", dependencies = TRUE)
 install.packages("data.table", dependencies = TRUE)
+install.packages("writexl", dependencies = TRUE)
 
 library(tidyverse)
 library(readxl)
@@ -14,10 +15,11 @@ library(ggplot2)
 library(polyglotr)
 library(numberize)
 library(data.table)
+library(writexl)
 
 # Read Data from excel and store as variable
 working_directory <- getwd()
-absolute_file_path <-paste(working_directory, "/raw_data/data_copy.xlsx", sep = "")
+absolute_file_path <-paste(working_directory, "/raw_data/data.xlsx", sep = "")
 data <- read_xlsx(path = absolute_file_path)
 
 # 1. Data cleaning
@@ -28,6 +30,7 @@ translate_fun <- function(text) {
   return(translated_text)
 }
 data <- sapply(data, translate_fun)
+write_xlsx(data, "transaction_order_data.csv")
 
 ## Reformat the data frame and assign the translated column names to the dataset
 a <- as.data.frame(data)
@@ -176,7 +179,6 @@ a$`Meal Type` <- as.factor(a$`Meal Type`)
 
 # 3. Exploratory Data Analysis (EDA)
 ## How much does each outlet 
-
 
 
 # 4. Modeling
