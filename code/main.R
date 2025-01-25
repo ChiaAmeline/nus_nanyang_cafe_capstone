@@ -44,7 +44,7 @@ a <- a[-1, ]
 ## Remove unnecessary columns and empty rows
 cols_to_drop <- c("Cashier", "Flights", "Number of Auxiliary", "Specification") 
 cols_to_drop_regex <- grep("Remark|Ordering", colnames(a))
-a <- a %>% select(-c(cols_to_drop_regex, cols_to_drop))
+a <- a %>% select(-all_of(c(cols_to_drop_regex, cols_to_drop)))
 
 rows_to_remove <- grep("total", a$`Serial number`, ignore.case = TRUE)
 is_empty <- function(variable) {
@@ -85,9 +85,9 @@ a$`Store Name` <- as.character(a$`Store Name`)
 a$`Dish Code` <- as.character(a$`Dish Code`)
 a$`Dish name` <- as.factor(unlist(a$`Dish name`))
 a$Dishes <- as.factor(unlist(a$Dishes))
-a$`Opening time` <- format(as.POSIXct( as.character(a$`Opening time`), format = "%Y-%m-%d %H:%M:%S"), "%H:%M:%S")
-a$`Checkout Time` <- format(as.POSIXct( as.character(a$`Checkout Time`), format = "%Y-%m-%d %H:%M:%S"), "%H:%M:%S")
-a$`Order Time` <- format(as.POSIXct( as.character(a$`Order Time`), format = "%Y-%m-%d %H:%M:%S"), "%H:%M:%S")
+a$`Opening time` <- format(as.POSIXct( as.character(a$`Opening time`), format = "%Y-%m-%d %H:%M:%S", tz = "UTC"), "%H:%M:%S")
+a$`Checkout Time` <- format(as.POSIXct( as.character(a$`Checkout Time`), format = "%Y-%m-%d %H:%M:%S", tz = "UTC"), "%H:%M:%S")
+a$`Order Time` <- format(as.POSIXct( as.character(a$`Order Time`), format = "%Y-%m-%d %H:%M:%S", tz = "UTC"), "%H:%M:%S")
 a$Price <- as.numeric(a$Price)
 a$Quantity <- as.numeric(a$Quantity)
 a$`Total Price` <- as.numeric(a$`Total Price`)
@@ -116,7 +116,7 @@ a$Branch <- as.factor(a$Branch)
 
 ### Creating new column to store the months to determine seasonal changes
 convert_numerical_month_to_month_name_func <- function(numerical_month){
-  switch (numerical_month,
+  char_months <- switch (numerical_month,
     "01" = "January", 
     "02" = "February",
     "03" = "March", 
@@ -130,30 +130,49 @@ convert_numerical_month_to_month_name_func <- function(numerical_month){
     "11" = "November", 
     "December"
   )
+  return(char_months)
 }
 a$Month <- sapply(format(a$`Purchase Date`, "%m"), convert_numerical_month_to_month_name_func)
 a$Month <- as.factor(a$Month)
+
 ### Creating new column to store the season of the month
-convert__months_to_seasons_func <- function(numerical_month){
-  switch (numerical_month,
-    "March" = "Spring", 
-    "April" = "Spring",
-    "May" = "Spring", 
-    "June" = "Summer",
-    "July" = "Summer", 
-    "August" = "Summer",
-    "September" = "Autumn", 
-    "October" = "Autumn", 
-    "November"= "Autumn",
-    "Winter"
+convert_months_to_seasons_func <- function(month){
+  month <- tolower(month)
+  season <- switch (month,
+    "march" = "Spring", 
+    "april" = "Spring",
+    "may" = "Spring", 
+    "june" = "Summer",
+    "july" = "Summer", 
+    "august" = "Summer",
+    "september" = "Autumn", 
+    "october" = "Autumn", 
+    "november"= "Autumn",
+    "december" = "Winter",
+    "january" = "Winter",
+    "february" = "Winter",
+    NA
   )
+  return(season)
 }
-a$Season <- sapply(a$Month, convert__months_to_seasons_func)
+a$Season <- sapply(a$Month, convert_months_to_seasons_func)
 a$Season <- as.factor(a$Season)
 
 ### Creating new column to determine if its breakfast / lunch / dinner (opening hours: 08:00 - 21:00 Mon to Sun)
-
-
+categorize_meal_type_func <- function(time){
+  hour <- as.numeric(substr(time, 1, 2))
+  if (hour >= 8 & hour < 11) {
+    return("Breakfast")
+  } else if (hour >= 11 & hour < 14) {
+    return("Lunch")
+  } else if (hour >= 18 & hour < 21) {
+    return("Dinner")
+  } else {
+    return("Other")
+  }
+}
+a$`Meal Type` <- sapply(a$`Order Time`, categorize_meal_type_func)
+a$`Meal Type` <- as.factor(a$`Meal Type`)
 
 # 3. Exploratory Data Analysis (EDA)
 ## How much does each outlet 
