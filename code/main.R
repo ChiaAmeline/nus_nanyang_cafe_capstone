@@ -1,4 +1,6 @@
 # Import libraries
+install.packages("DBI", dependencies = TRUE)
+install.packages("RMySQL", dependencies = TRUE)
 install.packages("tidyverse", dependencies = TRUE)
 install.packages("ggplot2", dependencies = TRUE)
 install.packages("dplyr", dependencies = TRUE)
@@ -8,6 +10,8 @@ install.packages("numberize", dependencies = TRUE)
 install.packages("data.table", dependencies = TRUE)
 install.packages("writexl", dependencies = TRUE)
 
+library(DBI)
+library(RMySQL)
 library(tidyverse)
 library(readxl)
 library(dplyr)
@@ -22,6 +26,23 @@ working_directory <- getwd()
 absolute_file_path <-paste(working_directory, "/raw_data/data.xlsx", sep = "")
 data <- read_xlsx(path = absolute_file_path)
 
+# Creating a DB connection to integrate MySql into R
+### We need to securely store MySql password. So to do this, you can set the password in your own OS 
+mysql_password <- Sys.getenv("MYSQL_PASSWORD")
+db_connection <- dbConnect(RMySQL::MySQL(), 
+                           dbname = "nanyangCafe", 
+                           host = "localhost", 
+                           port = 3306, 
+                           user = "root", 
+                           ## Please input your own MySql root password for your local 
+                           password = mysql_password,
+                           allowLoadLocalInfile = TRUE)
+
+dbSendQuery(db_connection, "SET GLOBAL local_infile = 'ON';")
+
+# Creating schema to store all data
+dbSendQuery(db_connection, "CREATE SCHEMA IF NOT EXISTS `nanyangCafe`;")
+  
 # 1. Data cleaning
 ## Translate data from Chinese to English (will create own df of chinese characters to reduce time taken to process the translation when the function hits google translate's API)
 ### Remove any rows that are entirely empty or more than 70% empty
@@ -61,7 +82,7 @@ get_unique_chinese_values_func <- function(all_chinese_character_data){
 }
 all_chinese_data <- c(unlist(title_row_chinese_character), unlist(columns_with_chinese_character))
 chinese_words <- get_unique_chinese_values_func(all_chinese_data)
-chinese_words_dictionary_df <- data.frame(chinese_words = chinese_words, stringsAsFactors = FALSE)
+chinese_words_dictionary_df <- data.frame(chineseWords = chinese_words, stringsAsFactors = FALSE)
 
 contains_english_characters_func <- function(data, check_row){
   data <- as.character(data)
@@ -73,7 +94,7 @@ contains_english_characters_func <- function(data, check_row){
     return(any(eng_num_character_regex))
   }
 }
-chinese_words_dictionary_df <- data.frame(chinese_words =   chinese_words_dictionary_df[!sapply(chinese_words_dictionary_df$chinese_words, function(word) {
+chinese_words_dictionary_df <- data.frame(chineseWords = chinese_words_dictionary_df[!sapply(chinese_words_dictionary_df$chineseWords, function(word) {
   contains_english_characters_func(word, check_row = TRUE)}), ], stringsAsFactors = FALSE )
 
 translate_fun <- function(text) {
@@ -81,43 +102,42 @@ translate_fun <- function(text) {
   translated_text <- google_translate(text, target_language = "en", source_language = "zh-CN")
   return(translated_text)
 }
-chinese_words_dictionary_df$translated_english_word <- sapply(chinese_words_dictionary_df$chinese_words, translate_fun)
+chinese_words_dictionary_df$translatedEnglishWords <- sapply(chinese_words_dictionary_df$chineseWords, translate_fun)
+### Exporting the translation so that we can modify some word that have been wrongly translated
+#### write_xlsx(chinese_words_dictionary_df, paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
+chinese_words_dictionary_df <- read_xlsx(path = paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
+### To improve processing time and reduce repeated translation, will be storing the chinese-english df into the DB
+dbSendQuery(db_connection, "DROP TABLE IF EXISTS nanyangCafe.nc_chineseEnglishTranslation; ")
+dbSendQuery(db_connection, "CREATE TABLE nc_chineseEnglishTranslation (
+                                  pid INT AUTO_INCREMENT PRIMARY KEY,
+                                  chineseWords varchar(255) NOT NULL,
+                                  translatedEnglishWords varchar(255) NOT NULL);")
+
+dbWriteTable(db_connection, value = chinese_words_dictionary_df, name = "nc_chineseEnglishTranslation", append = TRUE, row.names = FALSE) 
 
 ### Map the associated English words in the df
-translation_mapping <- setNames(chinese_words_dictionary_df$translated_english_word, chinese_words_dictionary_df$chinese_words)
-translated_transaction_order_data <- as.data.frame(lapply(data, function(column) {
-  ifelse(column %in% names(translation_mapping), 
-         translation_mapping[column], 
-         column)
+translation_mapping <- setNames(chinese_words_dictionary_df$translatedEnglishWords, chinese_words_dictionary_df$chineseWords)
+translated_transaction_order_data <- as.data.frame(lapply(data, function(index) {
+  ifelse(index %in% names(translation_mapping), 
+         translation_mapping[index], 
+         index)
 }))
-
-write_xlsx(translated_transaction_order_data, "translated_transaction_order_data.xlsx")   ## To export so that we dont have to rerun the translation all the time
-translated_transaction_order_data <- read_xlsx(path = paste(working_directory, "/translated_transaction_order_data.xlsx", sep = ""))
 
 ## Reformat the data frame and assign the translated column names to the dataset
 ### Checking for NA / NAN / empty values
 colnames(translated_transaction_order_data) <- as.character(unlist(translated_transaction_order_data[1,])) 
-setnames(translated_transaction_order_data, old = c("date", "Turnover", "Turnover amount"), new = c("Purchase Date", "Quantity", "Total Price"))
 translated_transaction_order_data <- translated_transaction_order_data[-1, ]
 
 ## Remove unnecessary columns and empty rows
-cols_to_drop_regex <- grep("Remark|Ordering", colnames(translated_transaction_order_data))
-translated_transaction_order_data <- translated_transaction_order_data %>% select(-all_of(cols_to_drop_regex))
-cols_to_drop <- c("Cashier", "Flights", "Number of Auxiliary", "Specification") 
+cols_to_drop <- c("Remark", "Cashier", "shift", "Number of Auxiliary", "Specification", "Orderer", "Food revenue items") 
 translated_transaction_order_data <- translated_transaction_order_data %>% select(-all_of(cols_to_drop))
-
-## Clean up dirty data that occurred due to translation
-### Updating Single Point values into "Ala Cart" so that the data is more meaningful
-translated_transaction_order_data$Dishes[translated_transaction_order_data$Dishes == "Single point"] <- "Ala Cart"
-translated_transaction_order_data$`Store Name` <- gsub("\\(Kaer Branch\\)", "(Kam Cheong Hou - Caravel Hotel)", translated_transaction_order_data$`Store Name`)
-translated_transaction_order_data$`Store Name` <- gsub("\\(Broadway Store\\)", "(Broadway Macau Food Street)", translated_transaction_order_data$`Store Name`)
 
 ## Modifying the data types of each columns
 translated_transaction_order_data$`Serial number` <- as.numeric(translated_transaction_order_data$`Serial number`)
 translated_transaction_order_data$`Purchase Date` <- as.Date(as.character(translated_transaction_order_data$`Purchase Date`), format = "%Y-%m-%d")
 translated_transaction_order_data$`Store Name` <- as.character(translated_transaction_order_data$`Store Name`)
-translated_transaction_order_data$`Dish Code` <- as.character(translated_transaction_order_data$`Dish Code`)
-translated_transaction_order_data$`Dish name` <- as.factor(unlist(translated_transaction_order_data$`Dish name`))
+translated_transaction_order_data$`Dishes code` <- as.character(translated_transaction_order_data$`Dishes code`)
+translated_transaction_order_data$`Dishes name` <- as.factor(unlist(translated_transaction_order_data$`Dishes name`))
 translated_transaction_order_data$Dishes <- as.factor(unlist(translated_transaction_order_data$Dishes))
 translated_transaction_order_data$`Opening time` <- format(as.POSIXct( as.character(translated_transaction_order_data$`Opening time`), format = "%Y-%m-%d %H:%M:%S", tz = "UTC"), "%H:%M:%S")
 translated_transaction_order_data$`Checkout Time` <- format(as.POSIXct( as.character(translated_transaction_order_data$`Checkout Time`), format = "%Y-%m-%d %H:%M:%S", tz = "UTC"), "%H:%M:%S")
@@ -129,22 +149,22 @@ translated_transaction_order_data$`Discount amount` <- as.numeric(translated_tra
 translated_transaction_order_data$`Amount received` <- as.numeric(translated_transaction_order_data$`Amount received`)
 translated_transaction_order_data$Discount <- as.factor(unlist(translated_transaction_order_data$Discount))
 translated_transaction_order_data$`Production Department` <- as.factor(unlist(translated_transaction_order_data$`Production Department`))
-translated_transaction_order_data$`Food revenue items` <- as.factor(unlist(translated_transaction_order_data$`Food revenue items`))
 translated_transaction_order_data$`Bill Type` <- as.factor(unlist(translated_transaction_order_data$`Bill Type`))
 translated_transaction_order_data$channel <- as.factor(unlist(translated_transaction_order_data$channel))
-translated_transaction_order_data$taste <- as.character(translated_transaction_order_data$taste)
+translated_transaction_order_data$`Flavor preference` <- as.character(translated_transaction_order_data$`Flavor preference`)
 translated_transaction_order_data$practice <- as.character(translated_transaction_order_data$practice)
 translated_transaction_order_data$`Region Name` <- as.factor(unlist(translated_transaction_order_data$`Region Name`))
-translated_transaction_order_data$`Table Name` <- as.factor(unlist(translated_transaction_order_data$`Table Name`))
+translated_transaction_order_data$`Table No` <- as.character(translated_transaction_order_data$`Table No`)
 translated_transaction_order_data$`Bill Number` <- as.factor(unlist(translated_transaction_order_data$`Bill Number`))
+translated_transaction_order_data$`Remark` <- as.character(translated_transaction_order_data$`Remark`)
 
 # 2. Data transformation
 ## Feature Engineering 
 ### Creating new column to store the exact location of the branch
 translated_transaction_order_data$Branch <- ifelse(
-  grepl("Nanyang Coffee \\(Broadway Macau Food Street\\)", translated_transaction_order_data$`Store Name`),
-  "Broadway Macau Food Street",
-  "Kam Cheong Hou - Caravel Hotel"
+  grepl("Nanyang Kopi \\(Broadway Branch\\)", translated_transaction_order_data$`Store Name`),
+  "Broadway",
+  "Caravel"
 )
 translated_transaction_order_data$Branch <- as.factor(translated_transaction_order_data$Branch)
 
@@ -207,6 +227,9 @@ categorize_meal_type_func <- function(time){
 }
 translated_transaction_order_data$`Meal Type` <- sapply(translated_transaction_order_data$`Order Time`, categorize_meal_type_func)
 translated_transaction_order_data$`Meal Type` <- as.factor(translated_transaction_order_data$`Meal Type`)
+
+write_xlsx(translated_transaction_order_data, paste(working_directory, "/raw_data/translated_transaction_order_data.xlsx", sep = ""))   
+
 
 # 3. Exploratory Data Analysis (EDA)
 
