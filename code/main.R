@@ -41,7 +41,7 @@ db_connection <- dbConnect(RMySQL::MySQL(),
                            port = 3306, 
                            user = "root", 
                            ## Please input your own MySql root password for your local 
-                           password = "Password",
+                           password = mysql_password,
                            allowLoadLocalInfile = TRUE)
 
 dbSendQuery(db_connection, "SET GLOBAL local_infile = 'ON';")
