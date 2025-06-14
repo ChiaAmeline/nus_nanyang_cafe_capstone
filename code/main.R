@@ -9,6 +9,7 @@ install.packages("readxl", dependencies = TRUE)
 install.packages("numberize", dependencies = TRUE)
 install.packages("data.table", dependencies = TRUE)
 install.packages("writexl", dependencies = TRUE)
+install.packages("openxlsx", dependencies = TRUE)
 
 library(DBI)
 library(RMySQL)
@@ -20,12 +21,17 @@ library(polyglotr)
 library(numberize)
 library(data.table)
 library(writexl)
+library(openxlsx)
 
 # Read Data from excel and store as variable
 working_directory <- getwd()
-absolute_file_path <-paste(working_directory, "/raw_data/data.xlsx", sep = "")
+absolute_file_path <- paste(working_directory, "/raw_data/data.xlsx", sep = "")
 data <- read_xlsx(path = absolute_file_path)
 
+recipe_file_path <- paste(working_directory, "/raw_data/recipe_data.xlsx", sep = "")
+
+### For recipe dataset, we will be reading the tab sheet and storing it in a col
+dishes_names <- excel_sheets(recipe_file_path)
 # Creating a DB connection to integrate MySql into R
 ### We need to securely store MySql password. So to do this, you can set the password in your own OS 
 mysql_password <- Sys.getenv("MYSQL_PASSWORD")
@@ -35,7 +41,7 @@ db_connection <- dbConnect(RMySQL::MySQL(),
                            port = 3306, 
                            user = "root", 
                            ## Please input your own MySql root password for your local 
-                           password = mysql_password,
+                           password = "Password",
                            allowLoadLocalInfile = TRUE)
 
 dbSendQuery(db_connection, "SET GLOBAL local_infile = 'ON';")
@@ -44,6 +50,7 @@ dbSendQuery(db_connection, "SET GLOBAL local_infile = 'ON';")
 dbSendQuery(db_connection, "CREATE SCHEMA IF NOT EXISTS `nanyangCafe`;")
   
 # 1. Data cleaning
+# Transaction Dataset
 ## Translate data from Chinese to English (will create own df of chinese characters to reduce time taken to process the translation when the function hits google translate's API)
 ### Remove any rows that are entirely empty or more than 70% empty
 rows_to_delete <- function(row, threshold = 0.7){
@@ -54,6 +61,7 @@ rows_to_delete <- function(row, threshold = 0.7){
   total_cols <- ncol(data)
   return(empty_count > (total_cols * threshold))
 }
+
 data <- data[!apply(data, 1, rows_to_delete), ]
 
 contains_chinese_characters_func <- function(data, check_row){
@@ -82,20 +90,25 @@ get_unique_chinese_values_func <- function(all_chinese_character_data){
 }
 all_chinese_data <- c(unlist(title_row_chinese_character), unlist(columns_with_chinese_character))
 chinese_words <- get_unique_chinese_values_func(all_chinese_data)
-chinese_words_dictionary_df <- data.frame(chineseWords = chinese_words, stringsAsFactors = FALSE)
 
-contains_english_characters_func <- function(data, check_row){
+### Creating new df using the transaction records
+chinese_words_dictionary_df <- data.frame(chineseWords = chinese_words, stringsAsFactors = FALSE)
+all_chinese_data <- c(unlist(title_row_chinese_character), unlist(columns_with_chinese_character))
+chinese_words <- get_unique_chinese_values_func(all_chinese_data)
+
+contains_english_num_characters_func <- function(data, check_row){
   data <- as.character(data)
   data <- trimws(data)  
-  eng_num_character_regex <- grepl("^[a-zA-Z0-9]+$", data)
+  eng_num_character_regex <- grepl("^([a-zA-Z0-9]+|[+-]?\\d*\\.?\\d+(?:[eE][+-]?\\d+)?)$", data)
   if (check_row) {
     return(all(eng_num_character_regex))
   } else {
     return(any(eng_num_character_regex))
   }
 }
+
 chinese_words_dictionary_df <- data.frame(chineseWords = chinese_words_dictionary_df[!sapply(chinese_words_dictionary_df$chineseWords, function(word) {
-  contains_english_characters_func(word, check_row = TRUE)}), ], stringsAsFactors = FALSE )
+  contains_english_num_characters_func(word, check_row = TRUE)}), ], stringsAsFactors = FALSE )
 
 translate_fun <- function(text) {
   text <- trimws(text)    
@@ -103,25 +116,67 @@ translate_fun <- function(text) {
   return(translated_text)
 }
 chinese_words_dictionary_df$translatedEnglishWords <- sapply(chinese_words_dictionary_df$chineseWords, translate_fun)
-### Exporting the translation so that we can modify some word that have been wrongly translated
+
+# Recipes Dataset
+### Appending newly translated Chinese words behind transaction records
+for (d in dishes_names) {
+  dish_ingredients <- read_excel(recipe_file_path, sheet = d)
+  cols_with_chinese_values <- get_unique_chinese_values_func(dish_ingredients[,contains_chinese_characters_func(dish_ingredients, check_row = FALSE)])
+  cols_with_chinese_values <- cols_with_chinese_values[!is.na(cols_with_chinese_values) & !sapply(cols_with_chinese_values, function(val) {
+    contains_english_num_characters_func(val, check_row = FALSE)
+  })]
+  unique_chinese_characters <- sapply(cols_with_chinese_values, function(val) {
+    val <- as.character(val)
+    #### Will retain this pair of characters and translate it together
+    if (grepl("??????", val)) {
+      return(val)
+    } else {
+      chinese_characters <- str_extract_all(val, "[\u4e00-\u9fff]+") |> unlist()
+      result <- paste(chinese_characters, collapse = "")
+      return(result)
+    }
+  }, USE.NAMES = FALSE)
+  
+  #### Check if chinese words exists in existing Chinese words dictionary df
+  unique_chinese_characters <- unique_chinese_characters[!unique_chinese_characters %in% chinese_words_dictionary_df$chineseWords]
+  chinese_words_recipes_dictionary_df <- data.frame(chineseWords = unique_chinese_characters)
+  chinese_words_recipes_dictionary_df$translatedEnglishWords <- sapply(chinese_words_recipes_dictionary_df$chineseWords, translate_fun)
+  
+  #### Appending each tabs to the existing Chinese words dictionary df
+  chinese_words_dictionary_df <- rbind(chinese_words_dictionary_df, chinese_words_recipes_dictionary_df)
+}
+
+#### During translation, there are still duplicated records, so removing them
+chinese_words_dictionary_df <- chinese_words_dictionary_df[!duplicated(chinese_words_dictionary_df),]
+
+### Exporting the translation
 #### write_xlsx(chinese_words_dictionary_df, paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
-chinese_words_dictionary_df <- read_xlsx(path = paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
-### To improve processing time and reduce repeated translation, will be storing the chinese-english df into the DB
+#### chinese_words_dictionary_df <- read_xlsx(path = paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
+chinese_words_dictionary_df <- chinese_words_dictionary_df[,-1]
+#### To improve processing time and reduce repeated translation, will be storing the chinese-english df into the DB
 dbSendQuery(db_connection, "DROP TABLE IF EXISTS nanyangCafe.nc_chineseEnglishTranslation; ")
 dbSendQuery(db_connection, "CREATE TABLE nc_chineseEnglishTranslation (
-                                  pid INT AUTO_INCREMENT PRIMARY KEY,
-                                  chineseWords varchar(255) NOT NULL,
-                                  translatedEnglishWords varchar(255) NOT NULL);")
+      pid INT AUTO_INCREMENT PRIMARY KEY,
+      chineseWords varchar(255) NOT NULL,
+      translatedEnglishWords varchar(255) NOT NULL);")
 
 dbWriteTable(db_connection, value = chinese_words_dictionary_df, name = "nc_chineseEnglishTranslation", append = TRUE, row.names = FALSE) 
 
-### Map the associated English words in the df
+### The DB will always be the source of truth for all translation, so will query from the db
+#### chinese_words_dictionary_df <- dbGetQuery(db_connection, "SELECT * FROM nanyangCafe.nc_chineseEnglishTranslation")
+
+### Transaction dataset - Map the associated English words in the df
 translation_mapping <- setNames(chinese_words_dictionary_df$translatedEnglishWords, chinese_words_dictionary_df$chineseWords)
 translated_transaction_order_data <- as.data.frame(lapply(data, function(index) {
   ifelse(index %in% names(translation_mapping), 
          translation_mapping[index], 
          index)
 }))
+
+write_xlsx(chinese_words_dictionary_df, paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
+
+### Recipe dataset - Map the associated English words in the df
+
 
 ## Reformat the data frame and assign the translated column names to the dataset
 ### Checking for NA / NAN / empty values
@@ -228,11 +283,25 @@ categorize_meal_type_func <- function(time){
 translated_transaction_order_data$`Meal Type` <- sapply(translated_transaction_order_data$`Order Time`, categorize_meal_type_func)
 translated_transaction_order_data$`Meal Type` <- as.factor(translated_transaction_order_data$`Meal Type`)
 
-write_xlsx(translated_transaction_order_data, paste(working_directory, "/raw_data/translated_transaction_order_data.xlsx", sep = ""))   
-
 
 # 3. Exploratory Data Analysis (EDA)
+top_dishes <- translated_transaction_order_data %>%
+  group_by(Branch, `Meal Type`, `Dishes name`) %>%
+  summarise(Order_Count = n(), .groups = "drop") %>%
+  arrange(Branch, `Meal Type`, desc(Order_Count)) %>%
+  group_by(Branch, `Meal Type`) %>%
+  slice_head(n = 3)
 
+# Plot
+ggplot(top_dishes, aes(x = reorder(`Dishes name`, Order_Count), y = Order_Count, fill = `Meal Type`)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_grid(Branch ~ `Meal Type`, scales = "free_y") +
+  labs(title = "Top 3 Dishes Ordered per Meal Type by Branch",
+       x = "Dish Name",
+       y = "Order Count") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
 
 # 4. Modeling
 ## Apriori to create set meals
