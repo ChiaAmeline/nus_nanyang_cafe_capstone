@@ -137,7 +137,7 @@ for (d in dishes_names) {
       return(val)
     } else {
       chinese_characters <- str_extract_all(val, "[\u4e00-\u9fff]+") |> unlist()
-      result <- paste(chicols_with_chinese_valuesnese_characters, collapse = "")
+      result <- paste(chinese_characters, collapse = "")
       return(result)
     }
   }, USE.NAMES = FALSE)
@@ -495,6 +495,7 @@ reduced_df <- subset(inventory_recipe_df, select = c(inventoryUsed, servingPorti
 corr_matrix = round(cor(reduced_df), 2)
 ggcorrplot(corr_matrix, lab = TRUE, lab_size = 3, outline.color = "white", colors  = c("#b2182b", "white", "#2166ac"),
            title = "Correlation of inventory waste metrics", ggtheme = theme_minimal(base_size = 12))
+
 
 ## Package size cost vs quantity wastage (Scatterplot and linear graph)
 ggplot(inventory_recipe_df, aes(x = packageWasteQty, y = packageWasteCost)) +
