@@ -10,6 +10,7 @@ install.packages("numberize", dependencies = TRUE)
 install.packages("data.table", dependencies = TRUE)
 install.packages("writexl", dependencies = TRUE)
 install.packages("openxlsx", dependencies = TRUE)
+install.packages("ggcorrplot", dependencies = TRUE)
 
 library(DBI)
 library(RMySQL)
@@ -22,6 +23,7 @@ library(numberize)
 library(data.table)
 library(writexl)
 library(openxlsx)
+library(ggcorrplot)
 
 # Read Data from excel and store as variable
 working_directory <- getwd()
@@ -48,6 +50,9 @@ dbSendQuery(db_connection, "SET GLOBAL local_infile = 'ON';")
 
 # Creating schema to store all data
 dbSendQuery(db_connection, "CREATE SCHEMA IF NOT EXISTS `nanyangCafe`;")
+
+# Dropping tables
+dbSendQuery(db_connection, "DROP TABLE IF EXISTS nanyangCafe.nc_chineseEnglishTranslation, nanyangCafe.nc_dishName, nanyangCafe.nc_recipes, nanyangCafe.nc_inventory; ")
   
 # 1. Data cleaning
 # Transaction Dataset
@@ -122,7 +127,7 @@ chinese_words_dictionary_df$translatedEnglishWords <- sapply(chinese_words_dicti
 for (d in dishes_names) {
   dish_ingredients <- read_excel(recipe_file_path, sheet = d)
   cols_with_chinese_values <- get_unique_chinese_values_func(dish_ingredients[,contains_chinese_characters_func(dish_ingredients, check_row = FALSE)])
-  cols_with_chinese_values <- cols_with_chinese_values[!is.na(cols_with_chinese_values) & !sapply(cols_with_chinese_values, function(val) {
+   <- cols_with_chinese_values[!is.na(cols_with_chinese_values) & !sapply(cols_with_chinese_values, function(val) {
     contains_english_num_characters_func(val, check_row = FALSE)
   })]
   unique_chinese_characters <- sapply(cols_with_chinese_values, function(val) {
@@ -132,7 +137,7 @@ for (d in dishes_names) {
       return(val)
     } else {
       chinese_characters <- str_extract_all(val, "[\u4e00-\u9fff]+") |> unlist()
-      result <- paste(chinese_characters, collapse = "")
+      result <- paste(chicols_with_chinese_valuesnese_characters, collapse = "")
       return(result)
     }
   }, USE.NAMES = FALSE)
@@ -146,26 +151,44 @@ for (d in dishes_names) {
   chinese_words_dictionary_df <- rbind(chinese_words_dictionary_df, chinese_words_recipes_dictionary_df)
 }
 
+#### Since dishes names was used to extract each individual sheets, it was not part of the translation in the above function. So separately translating and appending it
+dishes_names <- as.vector(dishes_names)
+##### Removing some values as not all are dish names
+dishes_names <- dishes_names[1:25]
+chinese_words_dishes_names_df <- data.frame(chineseWords = dishes_names)
+chinese_words_dishes_names_df$translatedEnglishWords <- sapply(chinese_words_dishes_names_df$chineseWords, translate_fun)
+chinese_words_dictionary_df <- rbind(chinese_words_dictionary_df, chinese_words_dishes_names_df)
+
 #### During translation, there are still duplicated records, so removing them
 chinese_words_dictionary_df <- chinese_words_dictionary_df[!duplicated(chinese_words_dictionary_df),]
+
+#### Adding missing records of dishes
+missing_dishes_chinese <- c("???????????????", "?????????", "????????????")
+missing_dishes_chinese <- as.vector(missing_dishes_chinese)
+missing_dishes_english <- c("Mee Soto", "Prawn Noodle", "Mee Rebus")
+missing_dishes_english <- as.vector(missing_dishes_english)
+
+missing_dishes_df <- data.frame(
+  chineseWords = missing_dishes_chinese,
+  translatedEnglishWords = missing_dishes_english,
+  stringsAsFactors = FALSE   
+)
+
+chinese_words_dictionary_df <- rbind(chinese_words_dictionary_df, missing_dishes_df)
 
 ### Exporting the translation
 #### write_xlsx(chinese_words_dictionary_df, paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
 #### chinese_words_dictionary_df <- read_xlsx(path = paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
 chinese_words_dictionary_df <- chinese_words_dictionary_df[,-1]
 #### To improve processing time and reduce repeated translation, will be storing the chinese-english df into the DB
-dbSendQuery(db_connection, "DROP TABLE IF EXISTS nanyangCafe.nc_chineseEnglishTranslation; ")
+
+##### Chinese English Translation
 dbSendQuery(db_connection, "CREATE TABLE nc_chineseEnglishTranslation (
       pid INT AUTO_INCREMENT PRIMARY KEY,
       chineseWords varchar(255) NOT NULL,
       translatedEnglishWords varchar(255) NOT NULL);")
 
-dbWriteTable(db_connection, value = chinese_words_dictionary_df, name = "nc_chineseEnglishTranslation", append = TRUE, row.names = FALSE) 
-
-### The DB will always be the source of truth for all translation, so will query from the db
-#### chinese_words_dictionary_df <- dbGetQuery(db_connection, "SELECT * FROM nanyangCafe.nc_chineseEnglishTranslation")
-
-### Transaction dataset - Map the associated English words in the df
+####### Transaction dataset - Map the associated English words in the df
 translation_mapping <- setNames(chinese_words_dictionary_df$translatedEnglishWords, chinese_words_dictionary_df$chineseWords)
 translated_transaction_order_data <- as.data.frame(lapply(data, function(index) {
   ifelse(index %in% names(translation_mapping), 
@@ -173,12 +196,151 @@ translated_transaction_order_data <- as.data.frame(lapply(data, function(index) 
          index)
 }))
 
+chinese_words_dictionary_df <- dbGetQuery(db_connection, "SELECT * FROM nc_chineseEnglishTranslation;")
 write_xlsx(chinese_words_dictionary_df, paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
 
-### Recipe dataset - Map the associated English words in the df
+####### (Optional) To bypass the above codes by pumping data from excel into the tables 
+translated_dictionary_file_path <- paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = "")
+chinese_words_dictionary_df <- read_excel(translated_dictionary_file_path)
+chinese_words_dictionary_df <- chinese_words_dictionary_df[,-1]
+dbWriteTable(db_connection, value = chinese_words_dictionary_df, name = "nc_chineseEnglishTranslation", append = TRUE, row.names = FALSE) 
 
+##### Dish Name
+dbSendQuery(db_connection, "CREATE TABLE nc_dishName (
+      pid INT AUTO_INCREMENT PRIMARY KEY,
+      dishName varchar(255) NOT NULL,
+      dishComponents varchar(255) NULL);")
 
-## Reformat the data frame and assign the translated column names to the dataset
+####### Recipe dataset (Dish Name) - Map the associated English words in the df
+dishes_names <- dishes_names[-1] ### "Ingredients price" is not a dish name, so removing the row
+
+translated_dish_name_df <- data.frame(
+  dishName  = character(), 
+  dishComponents   = character(), 
+  stringsAsFactors = FALSE        
+)
+
+for (d in dishes_names) {
+  cur_sheet <- read_excel(recipe_file_path, sheet = d)
+  translated_dish_name <- chinese_words_dictionary_df$translatedEnglishWords[match(d, chinese_words_dictionary_df$chineseWords)]
+  ####### The dish components are all located on the first col with no other values in other cols
+  all_dish_component_index <- which( !is.na(cur_sheet[[1]]) & apply(cur_sheet[-1], 1, function(x) all(is.na(x) | trimws(x) == "")))
+  all_dish_component <- cur_sheet[all_dish_component_index, 1]
+  all_dish_component <- apply(all_dish_component, 1, function(x) gsub("[[:punct:]]+", "", x))
+  all_dish_component <- chinese_words_dictionary_df$translatedEnglishWords[match(all_dish_component, chinese_words_dictionary_df$chineseWords)]
+  all_dish_component <- as.vector(all_dish_component)
+  num_dish_component_cur_sheet <- length(all_dish_component)
+  
+  if (length(all_dish_component) == 0) {
+    row <- data.frame(
+      dishName = translated_dish_name,
+      dishComponents = NA_character_,
+      stringsAsFactors = FALSE
+    )
+    translated_dish_name_df <- rbind(translated_dish_name_df, row)
+    next
+  } else {
+    for (counter in 1:num_dish_component_cur_sheet) {
+      row <- data.frame(
+        dishName = translated_dish_name,
+        dishComponents = all_dish_component[counter],
+        stringsAsFactors = FALSE
+      )
+      translated_dish_name_df <- rbind(translated_dish_name_df, row)
+    }
+  }
+}
+
+##### Manually adding some of the records as the data showcase the main ingredients to cook the dish itself and its not a component
+additional_dishes <- c("Bak Kut Teh", "Hainan Chicken Kow Teh Set Meal", "Big shrimp laksa")
+additional_dishes <- as.vector(additional_dishes)
+
+for (a in additional_dishes) {
+  row <- data.frame(
+    dishName = a,
+    dishComponents = NA_character_,
+    stringsAsFactors = FALSE
+  )
+  translated_dish_name_df <- rbind(translated_dish_name_df, row)
+}
+
+dbWriteTable(db_connection, value = translated_dish_name_df, name = "nc_dishName", append = TRUE, row.names = FALSE) 
+write_xlsx(translated_dish_name_df, paste(working_directory, "/raw_data/dish_name_table.xlsx", sep = ""))
+
+####### (Optional) To bypass the above codes by pumping data from excel into the tables 
+dish_names_file_path <- paste(working_directory, "/raw_data/dish_name_table.xlsx", sep = "")
+translated_dish_name_df <- read_excel(dish_names_file_path)
+translated_dish_name_df <- translated_dish_name_df[,-1]
+dbWriteTable(db_connection, value = translated_dish_name_df, name = "nc_dishName", append = TRUE, row.names = FALSE) 
+
+##### Inventory
+dbSendQuery(db_connection, "CREATE TABLE nc_inventory (
+      pid INT AUTO_INCREMENT PRIMARY KEY,
+      ingredientName varchar(255) NOT NULL,
+      packagingSize DOUBLE NOT NULL, 
+      packagingPrice DOUBLE NOT NULL, 
+      unitPrice DOUBLE NOT NULL);")
+
+inventory_df <- data.frame(
+  ingredientName  = character(),  
+  packagingSize   = numeric(),   
+  packagingPrice  = numeric(),     
+  unitPrice       = numeric(),    
+  stringsAsFactors = FALSE        
+)
+
+for (d in dishes_names) {
+  dish_ingredients <- read_excel(recipe_file_path, sheet = d)
+  ##### Remove title and header rows
+  dish_ingredients <- dish_ingredients[-c(1, 2),]
+  ##### Removing rows that doesnt give much information
+  rows_less_than_threshold <- !apply(
+    dish_ingredients, 1,
+    function(r) rows_to_delete(as.list(r))
+  )
+  cur_sheet <- dish_ingredients[rows_less_than_threshold, , drop = FALSE]
+  ##### Reading the ingredient col to translate and append to dataframe
+  translated_english_dish_name <- translation_mapping[ cur_sheet[[1]] ]
+  row <- data.frame(
+    ingredientName  = translated_english_dish_name,
+    packagingSize   = cur_sheet[[2]],
+    packagingPrice  = cur_sheet[[3]],
+    unitPrice       = cur_sheet[[4]],
+    stringsAsFactors = FALSE
+  )
+  inventory_df <- rbind(inventory_df, row)
+}  
+##### Removing rows with NA values and ingredient Name = "Tangshan" as it doesnt value add
+inventory_df <- inventory_df[ complete.cases(inventory_df), ]
+inventory_df <- inventory_df %>% mutate(ingredientName = trimws(ingredientName)) %>% filter(ingredientName != "Tangshan")
+
+##### Removing duplicated rows
+inventory_df <- inventory_df[ !duplicated(inventory_df), ]
+
+dbWriteTable(db_connection, value = inventory_df, name = "nc_inventory", append = TRUE, row.names = FALSE) 
+write_xlsx(inventory_df, paste(working_directory, "/raw_data/inventory_table.xlsx", sep = ""))
+
+####### (Optional) To bypass the above codes by pumping data from excel into the tables 
+inventory_file_path <- paste(working_directory, "/raw_data/inventory_table.xlsx", sep = "")
+inventory_df <- read_excel(inventory_file_path)
+inventory_df <- inventory_df[,-1]
+dbWriteTable(db_connection, value = inventory_df, name = "nc_inventory", append = TRUE, row.names = FALSE) 
+
+##### Recipe 
+dbSendQuery(db_connection, "CREATE TABLE nc_recipes (
+      dishId INT, 
+      inventoryId INT,
+      inventoryUsed DOUBLE NOT NULL,
+      totalCost DOUBLE NOT NULL,
+      servingPortion DOUBLE NOT NULL,
+      PRIMARY KEY (dishId, inventoryId));")
+
+###### Manually created the excel, so inserting it into the DB 
+translated_recipe_data_file_path <- paste(working_directory, "/raw_data/recipes.xlsx", sep = "")
+translated_recipe_df <- read_excel(translated_recipe_data_file_path)
+dbWriteTable(db_connection, value = translated_recipe_df, name = "nc_recipes", append = TRUE, row.names = FALSE) 
+
+## Transaction dataset: Reformat the data frame and assign the translated column names to the dataset
 ### Checking for NA / NAN / empty values
 colnames(translated_transaction_order_data) <- as.character(unlist(translated_transaction_order_data[1,])) 
 translated_transaction_order_data <- translated_transaction_order_data[-1, ]
@@ -213,8 +375,19 @@ translated_transaction_order_data$`Table No` <- as.character(translated_transact
 translated_transaction_order_data$`Bill Number` <- as.factor(unlist(translated_transaction_order_data$`Bill Number`))
 translated_transaction_order_data$`Remark` <- as.character(translated_transaction_order_data$`Remark`)
 
+## Inventory Recipe dataset: Reformat the data frame and assign the translated column names to the dataset
+inventory_recipe_df <- dbGetQuery(db_connection, "SELECT NCD.dishName, NCD.dishComponents, NCI.ingredientName, NCI.packagingSize, NCI.packagingPrice, NCI.unitPrice, NCR.inventoryUsed, NCR.totalCost, NCR.servingPortion FROM nanyangCafe.nc_recipes NCR
+                                                  INNER JOIN nanyangCafe.nc_dishName NCD ON NCR.dishId = NCD.pid
+                                                  INNER JOIN nanyangCafe.nc_inventory NCI ON NCR.inventoryId = NCI.pid;")
+
+## NA values are included as there isnt any component mentioned within the orginal dataset. As such, will copy over the dish name as its component
+inventory_recipe_df <- inventory_recipe_df %>% mutate(dishComponents = ifelse(is.na(dishComponents), dishName, dishComponents))
+
+## Modifying the data types of each columns
+inventory_recipe_df$servingPortion <- round(as.numeric(inventory_recipe_df$`servingPortion`))
+
 # 2. Data transformation
-## Feature Engineering 
+## Transaction Data: Feature Engineering 
 ### Creating new column to store the exact location of the branch
 translated_transaction_order_data$Branch <- ifelse(
   grepl("Nanyang Kopi \\(Broadway Branch\\)", translated_transaction_order_data$`Store Name`),
@@ -283,8 +456,21 @@ categorize_meal_type_func <- function(time){
 translated_transaction_order_data$`Meal Type` <- sapply(translated_transaction_order_data$`Order Time`, categorize_meal_type_func)
 translated_transaction_order_data$`Meal Type` <- as.factor(translated_transaction_order_data$`Meal Type`)
 
+## Inventory Recipe Data: Feature Engineering 
+### Creating new columns to determine the food wastes caused by packaging
+#### Pack to Use ratio
+inventory_recipe_df$packToUseRatio <- inventory_recipe_df$packagingSize / inventory_recipe_df$inventoryUsed
+#### Total serving by package
+inventory_recipe_df$totalServingByPackage <- inventory_recipe_df$packToUseRatio * inventory_recipe_df$servingPortion
+#### Package waste quantity
+inventory_recipe_df$packageWasteQty <- inventory_recipe_df$packagingSize %% inventory_recipe_df$inventoryUsed
+#### Package waste cost price
+inventory_recipe_df$packageWasteCost <- inventory_recipe_df$packageWasteQty * inventory_recipe_df$unitPrice
+#### write_xlsx(inventory_recipe_df, paste(working_directory, "/raw_data/recipe_inventory.xlsx", sep = ""))
 
 # 3. Exploratory Data Analysis (EDA)
+## Transaction Data
+## Top 3 Dishes Ordered per Meal Type by Branch (Horizontal Bar Chart)
 top_dishes <- translated_transaction_order_data %>%
   group_by(Branch, `Meal Type`, `Dishes name`) %>%
   summarise(Order_Count = n(), .groups = "drop") %>%
@@ -292,7 +478,7 @@ top_dishes <- translated_transaction_order_data %>%
   group_by(Branch, `Meal Type`) %>%
   slice_head(n = 3)
 
-# Plot
+
 ggplot(top_dishes, aes(x = reorder(`Dishes name`, Order_Count), y = Order_Count, fill = `Meal Type`)) +
   geom_bar(stat = "identity") +
   coord_flip() +
@@ -303,6 +489,39 @@ ggplot(top_dishes, aes(x = reorder(`Dishes name`, Order_Count), y = Order_Count,
   theme_minimal() +
   theme(axis.text.y = element_text(size = 8))
 
+## Inventory Recipe Data
+## Correlation for inventory wastage (Heatmap)
+reduced_df <- subset(inventory_recipe_df, select = c(inventoryUsed, servingPortion, packageWasteQty, packageWasteCost))
+corr_matrix = round(cor(reduced_df), 2)
+ggcorrplot(corr_matrix, lab = TRUE, lab_size = 3, outline.color = "white", colors  = c("#b2182b", "white", "#2166ac"),
+           title = "Correlation of inventory waste metrics", ggtheme = theme_minimal(base_size = 12))
+
+## Package size cost vs quantity wastage (Scatterplot and linear graph)
+ggplot(inventory_recipe_df, aes(x = packageWasteQty, y = packageWasteCost)) +
+  geom_point(alpha = 0.6, colour = "#2C77B0") +
+  geom_smooth(method = "lm", se = FALSE, colour = "red", linewidth = 0.75) +
+  labs(title = "Package size cost vs. quantity wastage",
+       x = "Quantity wastage (g / ml)",
+       y = "Cost wastage (MOP)") +
+  theme_minimal(base_size = 12)
+
 # 4. Modeling
+## Linear regression on package size cost vs quantity wastage
+
+
+
 ## Apriori to create set meals
+
+
+## EOQ
+
+
+## ABC analysis
+
+## K-clusterings
+
+
+
+
+
 
