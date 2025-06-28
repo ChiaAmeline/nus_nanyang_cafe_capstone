@@ -43,7 +43,7 @@ db_connection <- dbConnect(RMySQL::MySQL(),
                            port = 3306, 
                            user = "root", 
                            ## Please input your own MySql root password for your local 
-                           password = mysql_password,
+                           password = "Dragonee%1997",
                            allowLoadLocalInfile = TRUE)
 
 dbSendQuery(db_connection, "SET GLOBAL local_infile = 'ON';")
@@ -195,9 +195,6 @@ translated_transaction_order_data <- as.data.frame(lapply(data, function(index) 
          translation_mapping[index], 
          index)
 }))
-
-chinese_words_dictionary_df <- dbGetQuery(db_connection, "SELECT * FROM nc_chineseEnglishTranslation;")
-write_xlsx(chinese_words_dictionary_df, paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = ""))
 
 ####### (Optional) To bypass the above codes by pumping data from excel into the tables 
 translated_dictionary_file_path <- paste(working_directory, "/raw_data/translated_chinese_english_dictionary.xlsx", sep = "")
@@ -494,7 +491,7 @@ ggplot(top_dishes, aes(x = reorder(`Dishes name`, Order_Count), y = Order_Count,
 reduced_df <- subset(inventory_recipe_df, select = c(inventoryUsed, servingPortion, packageWasteQty, packageWasteCost))
 corr_matrix = round(cor(reduced_df), 2)
 ggcorrplot(corr_matrix, lab = TRUE, lab_size = 3, outline.color = "white", colors  = c("#b2182b", "white", "#2166ac"),
-           title = "Correlation of inventory waste metrics", ggtheme = theme_minimal(base_size = 12))
+           title = "Correlation of inventory metrics", ggtheme = theme_minimal(base_size = 12))
 
 
 ## Package size cost vs quantity wastage (Scatterplot and linear graph)
