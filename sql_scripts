@@ -1,0 +1,39 @@
+# Creating schema to store all data
+dbSendQuery(db_connection, "CREATE SCHEMA IF NOT EXISTS `nanyangCafe`;")
+
+
+# Dropping tables
+dbSendQuery(db_connection, "DROP TABLE IF EXISTS nanyangCafe.nc_chineseEnglishTranslation, nanyangCafe.nc_dishName, nanyangCafe.nc_recipes, nanyangCafe.nc_inventory; ")
+  
+  
+##### Chinese English Translation
+dbSendQuery(db_connection, "CREATE TABLE nc_chineseEnglishTranslation (
+      pid INT AUTO_INCREMENT PRIMARY KEY,
+      chineseWords varchar(255) NOT NULL,
+      translatedEnglishWords varchar(255) NOT NULL);")
+
+
+##### Dish Name
+dbSendQuery(db_connection, "CREATE TABLE nc_dishName (
+      pid INT AUTO_INCREMENT PRIMARY KEY,
+      dishName varchar(255) NOT NULL,
+      dishComponents varchar(255) NULL);")
+
+
+##### Inventory
+dbSendQuery(db_connection, "CREATE TABLE nc_inventory (
+      pid INT AUTO_INCREMENT PRIMARY KEY,
+      ingredientName varchar(255) NOT NULL,
+      packagingSize DOUBLE NOT NULL, 
+      packagingPrice DOUBLE NOT NULL, 
+      unitPrice DOUBLE NOT NULL);")
+      
+
+##### Recipe 
+dbSendQuery(db_connection, "CREATE TABLE nc_recipes (
+      dishId INT, 
+      inventoryId INT,
+      inventoryUsed DOUBLE NOT NULL,
+      totalCost DOUBLE NOT NULL,
+      servingPortion DOUBLE NOT NULL,
+      PRIMARY KEY (dishId, inventoryId));")
