@@ -11,6 +11,14 @@ install.packages("data.table", dependencies = TRUE)
 install.packages("writexl", dependencies = TRUE)
 install.packages("openxlsx", dependencies = TRUE)
 install.packages("ggcorrplot", dependencies = TRUE)
+install.packages("ggfortify", dependencies = TRUE)  
+install.packages("lubridate", dependencies = TRUE)  
+install.packages("https://cran.r-project.org/src/contrib/Archive/arules/arules_1.7-10.tar.gz", repos = NULL, type = "source", dependencies = TRUE)
+install.packages("stringr", dependencies = TRUE)  
+install.packages("scales", dependencies = TRUE) 
+install.packages("viridisLite", dependencies = TRUE) 
+install.packages("broom", dependencies = TRUE) 
+install.packages("gt", dependencies = TRUE) 
 
 library(DBI)
 library(RMySQL)
@@ -24,6 +32,14 @@ library(data.table)
 library(writexl)
 library(openxlsx)
 library(ggcorrplot)
+library(ggfortify)
+library(lubridate)
+library(arules)
+library(stringr)
+library(scales)
+library(viridisLite)
+library(broom)
+library(gt)
 
 # Read Data from excel and store as variable
 working_directory <- getwd()
@@ -32,6 +48,8 @@ data <- read_xlsx(path = absolute_file_path)
 
 recipe_file_path <- paste(working_directory, "/raw_data/recipe_data.xlsx", sep = "")
 
+full_transaction_file_path <- paste(working_directory, "/raw_data/transaction_dataset_2024.xlsx", sep = "")
+data <- read_xlsx(path = full_transaction_file_path,  sheet = "Report")
 ### For recipe dataset, we will be reading the tab sheet and storing it in a col
 dishes_names <- excel_sheets(recipe_file_path)
 # Creating a DB connection to integrate MySql into R
@@ -48,12 +66,7 @@ db_connection <- dbConnect(RMySQL::MySQL(),
 
 dbSendQuery(db_connection, "SET GLOBAL local_infile = 'ON';")
 
-# Creating schema to store all data
-dbSendQuery(db_connection, "CREATE SCHEMA IF NOT EXISTS `nanyangCafe`;")
-
-# Dropping tables
-dbSendQuery(db_connection, "DROP TABLE IF EXISTS nanyangCafe.nc_chineseEnglishTranslation, nanyangCafe.nc_dishName, nanyangCafe.nc_recipes, nanyangCafe.nc_inventory; ")
-  
+nrow(data)
 # 1. Data cleaning
 # Transaction Dataset
 ## Translate data from Chinese to English (will create own df of chinese characters to reduce time taken to process the translation when the function hits google translate's API)
@@ -183,11 +196,6 @@ chinese_words_dictionary_df <- chinese_words_dictionary_df[,-1]
 #### To improve processing time and reduce repeated translation, will be storing the chinese-english df into the DB
 
 ##### Chinese English Translation
-dbSendQuery(db_connection, "CREATE TABLE nc_chineseEnglishTranslation (
-      pid INT AUTO_INCREMENT PRIMARY KEY,
-      chineseWords varchar(255) NOT NULL,
-      translatedEnglishWords varchar(255) NOT NULL);")
-
 ####### Transaction dataset - Map the associated English words in the df
 translation_mapping <- setNames(chinese_words_dictionary_df$translatedEnglishWords, chinese_words_dictionary_df$chineseWords)
 translated_transaction_order_data <- as.data.frame(lapply(data, function(index) {
@@ -203,11 +211,6 @@ chinese_words_dictionary_df <- chinese_words_dictionary_df[,-1]
 dbWriteTable(db_connection, value = chinese_words_dictionary_df, name = "nc_chineseEnglishTranslation", append = TRUE, row.names = FALSE) 
 
 ##### Dish Name
-dbSendQuery(db_connection, "CREATE TABLE nc_dishName (
-      pid INT AUTO_INCREMENT PRIMARY KEY,
-      dishName varchar(255) NOT NULL,
-      dishComponents varchar(255) NULL);")
-
 ####### Recipe dataset (Dish Name) - Map the associated English words in the df
 dishes_names <- dishes_names[-1] ### "Ingredients price" is not a dish name, so removing the row
 
@@ -271,13 +274,6 @@ translated_dish_name_df <- translated_dish_name_df[,-1]
 dbWriteTable(db_connection, value = translated_dish_name_df, name = "nc_dishName", append = TRUE, row.names = FALSE) 
 
 ##### Inventory
-dbSendQuery(db_connection, "CREATE TABLE nc_inventory (
-      pid INT AUTO_INCREMENT PRIMARY KEY,
-      ingredientName varchar(255) NOT NULL,
-      packagingSize DOUBLE NOT NULL, 
-      packagingPrice DOUBLE NOT NULL, 
-      unitPrice DOUBLE NOT NULL);")
-
 inventory_df <- data.frame(
   ingredientName  = character(),  
   packagingSize   = numeric(),   
@@ -324,14 +320,6 @@ inventory_df <- inventory_df[,-1]
 dbWriteTable(db_connection, value = inventory_df, name = "nc_inventory", append = TRUE, row.names = FALSE) 
 
 ##### Recipe 
-dbSendQuery(db_connection, "CREATE TABLE nc_recipes (
-      dishId INT, 
-      inventoryId INT,
-      inventoryUsed DOUBLE NOT NULL,
-      totalCost DOUBLE NOT NULL,
-      servingPortion DOUBLE NOT NULL,
-      PRIMARY KEY (dishId, inventoryId));")
-
 ###### Manually created the excel, so inserting it into the DB 
 translated_recipe_data_file_path <- paste(working_directory, "/raw_data/recipes.xlsx", sep = "")
 translated_recipe_df <- read_excel(translated_recipe_data_file_path)
@@ -345,6 +333,8 @@ translated_transaction_order_data <- translated_transaction_order_data[-1, ]
 ## Remove unnecessary columns and empty rows
 cols_to_drop <- c("Remark", "Cashier", "shift", "Number of Auxiliary", "Specification", "Orderer", "Food revenue items") 
 translated_transaction_order_data <- translated_transaction_order_data %>% select(-all_of(cols_to_drop))
+translated_transaction_order_data <- translated_transaction_order_data[,-24]
+translated_transaction_order_data <- translated_transaction_order_data[,-19]
 
 ## Modifying the data types of each columns
 translated_transaction_order_data$`Serial number` <- as.numeric(translated_transaction_order_data$`Serial number`)
@@ -370,7 +360,6 @@ translated_transaction_order_data$practice <- as.character(translated_transactio
 translated_transaction_order_data$`Region Name` <- as.factor(unlist(translated_transaction_order_data$`Region Name`))
 translated_transaction_order_data$`Table No` <- as.character(translated_transaction_order_data$`Table No`)
 translated_transaction_order_data$`Bill Number` <- as.factor(unlist(translated_transaction_order_data$`Bill Number`))
-translated_transaction_order_data$`Remark` <- as.character(translated_transaction_order_data$`Remark`)
 
 ## Inventory Recipe dataset: Reformat the data frame and assign the translated column names to the dataset
 inventory_recipe_df <- dbGetQuery(db_connection, "SELECT NCD.dishName, NCD.dishComponents, NCI.ingredientName, NCI.packagingSize, NCI.packagingPrice, NCI.unitPrice, NCR.inventoryUsed, NCR.totalCost, NCR.servingPortion FROM nanyangCafe.nc_recipes NCR
@@ -453,6 +442,8 @@ categorize_meal_type_func <- function(time){
 translated_transaction_order_data$`Meal Type` <- sapply(translated_transaction_order_data$`Order Time`, categorize_meal_type_func)
 translated_transaction_order_data$`Meal Type` <- as.factor(translated_transaction_order_data$`Meal Type`)
 
+write_xlsx(translated_transaction_order_data, paste(working_directory, "/raw_data/translated_transaction_dataset_2024.xlsx", sep = ""))
+
 ## Inventory Recipe Data: Feature Engineering 
 ### Creating new columns to determine the food wastes caused by packaging
 #### Pack to Use ratio
@@ -486,6 +477,53 @@ ggplot(top_dishes, aes(x = reorder(`Dishes name`, Order_Count), y = Order_Count,
   theme_minimal() +
   theme(axis.text.y = element_text(size = 8))
 
+
+## Top 5 Dishes Ordered per Season per Bill Type
+transaction_order_data_eda_df <- translated_transaction_order_data %>% filter(!str_detect(`Dishes name`, regex("\\b(service|delivery|takeaway)\\s*fee\\b|\\bbag\\b|\\bbox\\b",, ignore_case = TRUE)))
+top5 <- transaction_order_data_eda_df %>% 
+  group_by(Season, `Bill Type`, `Dishes name`) %>% 
+  summarise(order_count = n(), .groups = "drop") %>% 
+  arrange(Season, `Bill Type`, desc(order_count)) %>% 
+  group_by(Season, `Bill Type`) %>% 
+  slice_head(n = 5) %>% 
+  mutate(pct = order_count / sum(order_count)) %>% 
+  ungroup()
+
+dishes <- sort(unique(top5$`Dishes name`))         
+n_dishes <- length(dishes)
+
+pal_dishes  <- scales::hue_pal(l = 65, c = 100)(n_dishes)  
+names(pal_dishes) <- dishes         
+
+ggplot(top5,aes(y =`Bill Type`, x = order_count, fill = `Dishes name`)) +
+  geom_col(width = 0.8) +  facet_wrap(~ Season, nrow = 1) +
+  scale_fill_manual(values = pal_dishes, guide = guide_legend(ncol = 3)) +
+  scale_x_continuous(labels = comma, expand = expansion(mult = c(0, 0.02))) +
+  labs(title = "Top 5 Dishes by Season For Year 2024",
+       x = "Order Count", y = NULL, fill = "Dish") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position   = "bottom",
+        legend.key.height = unit(0.4, "cm"),
+        legend.text = element_text(size = 8))
+
+
+ggplot(top5,aes(y = `Bill Type`, x = pct, fill = `Dishes name`)) +
+  geom_col(width = 0.8) +
+  geom_text(aes(label = ifelse(pct >= 0.03, percent(pct, 1), "")),
+            position = position_stack(vjust = 0.5),
+            colour   = "white",
+            size     = 3) +
+  facet_wrap(~ Season, nrow = 1) +
+  scale_fill_manual(values = pal_dishes, guide = guide_legend(ncol = 3)) +
+  scale_x_continuous(labels = percent_format(accuracy = 1),
+                     expand = expansion(mult = c(0, 0.02))) +
+  labs(title = "Proportion of Top 5 Dishes by Season For Year 2024",
+       x = "Proportion of Order Count", y = NULL, fill = "Dish") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        legend.key.height = unit(0.4, "cm"),
+        legend.text = element_text(size = 8))
+
 ## Inventory Recipe Data
 ## Correlation for inventory wastage (Heatmap)
 reduced_df <- subset(inventory_recipe_df, select = c(inventoryUsed, servingPortion, packageWasteQty, packageWasteCost))
@@ -493,30 +531,201 @@ corr_matrix = round(cor(reduced_df), 2)
 ggcorrplot(corr_matrix, lab = TRUE, lab_size = 3, outline.color = "white", colors  = c("#b2182b", "white", "#2166ac"),
            title = "Correlation of inventory metrics", ggtheme = theme_minimal(base_size = 12))
 
-
 ## Package size cost vs quantity wastage (Scatterplot and linear graph)
 ggplot(inventory_recipe_df, aes(x = packageWasteQty, y = packageWasteCost)) +
   geom_point(alpha = 0.6, colour = "#2C77B0") +
-  geom_smooth(method = "lm", se = FALSE, colour = "red", linewidth = 0.75) +
   labs(title = "Package size cost vs. quantity wastage",
        x = "Quantity wastage (g / ml)",
        y = "Cost wastage (MOP)") +
   theme_minimal(base_size = 12)
 
+combined_quads <- inventory_recipe_df %>%
+  mutate(
+    quadrant = case_when(
+      packageWasteQty  >= 500 & packageWasteCost >= 10 & packageWasteCost <  20  ~ "Mid-Qty / Mid-Cost",
+      packageWasteQty  >= 500 & packageWasteCost >  20  ~ "High-Qty / High-Cost",
+      TRUE                                               ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(quadrant)) %>% distinct(ingredientName, dishName, .keep_all = TRUE)
+
+combined_quads %>%
+  select(Dish = dishName,
+        Ingredient = ingredientName,
+         `Quantity wastage (g / ml)`    = packageWasteQty,
+         `Cost Wasted (MOP)` = packageWasteCost,
+         Quadrant            = quadrant) %>%
+  gt() %>%
+  tab_header(
+    title    = "Ingredients in Mid-Qty/Mid-Cost & High-Qty/High-Cost Quadrants",
+  ) %>%
+  fmt_number(
+    columns = vars(`Quantity wastage (g / ml)`, `Cost Wasted (MOP)`),
+    decimals = 1
+  ) %>%
+  opt_row_striping() 
+
+
 # 4. Modeling
-## Linear regression on package size cost vs quantity wastage
+translated_transaction_order_data <- read_excel(path = paste(working_directory, "/raw_data/translated_transaction_dataset_2024.xlsx", sep = ""))
+## Inventory Management
+### Linear regression on package size cost vs quantity wastage
+inventory_recipe_df <- read_excel(path = paste(working_directory, "/raw_data/recipe_inventory.xlsx", sep = ""))
+#### Check for normality
+ggplot(data=inventory_recipe_df, mapping=aes(x=packageWasteQty))+geom_boxplot() + ggtitle("Outlier checker: Package Waste Qty") + labs(x="Package Waste Qty")
+#### Removal of records with 0 as its value
+inventory_recipe_qt_df <-inventory_recipe_df %>% filter(packageWasteQty != 0)
+ggplot(data=inventory_recipe_qt_df, mapping=aes(x=packageWasteQty)) + geom_boxplot() + ggtitle("Outlier checker: Package Waste Qty") + labs(x="Package Waste Qty")
+
+#### Check for normality
+ggplot(data=inventory_recipe_df, mapping=aes(x=packageWasteCost))+geom_boxplot() + ggtitle("Outlier checker: Package Waste Cost") + labs(x="Package Waste Cost")
+#### Removal of records with 0 as its value
+inventory_recipe_ct_df <-inventory_recipe_df %>% filter(packageWasteCost != 0)
+ggplot(data=inventory_recipe_ct_df, mapping=aes(x=packageWasteCost))+geom_boxplot() + ggtitle("Outlier checker: Package Waste Cost") + labs(x="Package Waste Cost")
+
+##### Log Transform
+inventory_recipe_lm_df <- inventory_recipe_df
+inventory_recipe_lm_df <- inventory_recipe_lm_df %>% filter(packageWasteQty != 0) 
+inventory_recipe_lm_df <- inventory_recipe_lm_df %>% filter(packageWasteCost != 0)
+inventory_recipe_lm_df <- mutate(inventory_recipe_lm_df, logPackageWasteQty = log(packageWasteQty))
+inventory_recipe_lm_df <- mutate(inventory_recipe_lm_df, logPackageWasteCost = log(packageWasteCost))
+inventory_recipe_lm_df <- inventory_recipe_lm_df %>% filter( if_all(everything(),~ !(is.infinite(.) & . < 0) ) )
+
+linear_model <- lm(packageWasteQty ~ packageWasteCost , data = inventory_recipe_lm_df)
+summary(linear_model)
+#### Determining confidence and validity of the regression by plotting the distribution of the residuals
+residual_df <- data.frame(
+  residuals = linear_model$residuals 
+)
+
+ggplot(residual_df, aes(sample = residuals)) +
+  stat_qq(alpha = 0.7, colour = "#2C77B0") +
+  stat_qq_line(colour = "red") +
+  labs(title = "QQ Plot of Residuals",
+       x = "Theoretical quantiles",
+       y = "Residuals") +
+  theme_minimal(base_size = 12)
+
+### ABC analysis
+inventory_recipe_df <- inventory_recipe_df %>%  mutate(annualQty  = inventoryUsed * (365 / 30), annualCost = unitPrice * annualQty)
+
+inventory_recipe_df %>% arrange(desc(annualCost)) %>% 
+  mutate(rank = row_number(),
+         cumPct = cumsum(annualCost) / sum(annualCost)) %>%   
+  ggplot(aes(rank, cumPct)) +
+  geom_line(colour = "#2C77B0") +
+  scale_y_continuous(labels = percent_format()) +           
+  labs(title = "Pareto curve of annual ingredient spend",
+       x = "Ingredients ranked by spend",
+       y = "Cumulative share of total cost") +
+  theme_minimal(base_size = 12)
+
+ggplot(inventory_recipe_df, aes(x = rank)) +
+  # bars for annualCost
+  geom_col(aes(y = annualCost), fill = "#E6553F") +
+  
+  # line for cumulative pct (rescaled to primary y)
+  geom_line(aes(y = cumPct * max(annualCost)), colour = "#2C77B0", size = 1) +
+  geom_point(aes(y = cumPct * max(annualCost)), colour = "#2C77B0", size = 1.5) +
+  
+  # primary y for cost; secondary for pct
+  scale_y_continuous(
+    name = "Annual cost (MOP)",
+    labels = comma,
+    sec.axis = sec_axis(
+      ~ . / max(df$annualCost),
+      name = "Cumulative share of total cost",
+      labels = percent_format()
+    )
+  ) +
+  
+  # show only top???N ingredient names on the y axis
+  scale_x_continuous(
+    breaks = df$rank[1:10],             
+    labels = df$ingredientName[1:10]
+  ) + labs( title = "Pareto Analysis: Annual Cost and Cumulative Share by Ingredient", x = "Ingredient (ranked by annual cost)") +
+  coord_flip() +          
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.title.y.right = element_text(colour = "#2C77B0"),
+    axis.text.y         = element_text(size = 9)
+  )
+
+inventory_cum_df <- inventory_recipe_df %>% arrange(desc(annualCost)) %>% mutate(
+    cumPct = cumsum(annualCost) / sum(annualCost),
+    grades = case_when(
+    cumPct <= 0.80 ~ "A",
+    cumPct <= 0.95 ~ "B",
+    TRUE           ~ "C"
+  )
+) %>% filter(grades == "A")
+
+top_4_A_grade <- inventory_cum_df %>% group_by(grades) %>% slice_max(order_by = annualCost, n = 5, with_ties = FALSE) %>% ungroup()
+
+ggplot(top_4_A_grade, aes(x = reorder(ingredientName, annualCost), y = annualCost, fill = grades)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~ grades, scales = "free_y", nrow = 1) +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Top 4 Items Ingredients by Annual Spend",
+       x = NULL,
+       y = "Annual cost (MOP)") +
+  theme_minimal(base_size = 12)
+
+## Customer Segmentation
+### Apriori to create set meals
+translated_transaction_order_apriori_data <- translated_transaction_order_data
+translated_transaction_order_apriori_data$`Dishes name` <- str_to_lower(translated_transaction_order_apriori_data$`Dishes name`)
+translated_transaction_order_apriori_data$`Bill Type` <- str_to_lower(translated_transaction_order_apriori_data$`Bill Type`)
+transaction_data <- translated_transaction_order_apriori_data %>% filter(!str_detect(`Dishes name`, regex("\\b(service\\s*fee|delivery\\s*fee|bag|box)\\b", ignore_case = TRUE)))
+
+transaction_data <- transaction_data %>% filter(`Bill Type` %in% c("dine-in", "takeout"))
+transaction_data <- cbind(transaction_data$`Bill Number`, transaction_data$`Dishes code`) %>% as.data.frame()
+colnames(transaction_data) <- c("transactionID", "dishID")
+
+write.csv(transaction_data, paste(working_directory, "/raw_data/association_transactions.csv", sep = ""), quote = FALSE, row.names = FALSE)
+setwd(file.path(working_directory, "raw_data"))
+association_sale_trans <- read.transactions("association_transactions.csv", format = "single", sep = ",", cols=c(1,2), header = TRUE)
+
+mapping <- translated_transaction_order_apriori_data[,c("Dishes code", "Dishes name")]
+mapping <- unique(mapping)
+
+lookupItemDescription <- function(dishCode){
+  return (paste(dishCode,"_", (mapping[mapping$`Dishes code` == dishCode, "Dishes name"][1]), sep = ""))
+}
+
+association_sale_trans <- read.transactions("association_transactions.csv", format = "single", sep = ",", cols=c(1,2), header = TRUE)
+itemLabels(association_sale_trans)
+itemLabels(association_sale_trans) <- sapply(itemLabels(association_sale_trans), lookupItemDescription)
+
+#### Generating rules
+association_rules <- apriori(association_sale_trans, parameter = list(supp = 0.006, conf = 0.7, target = "rules", maxlen = 10))
+association_rules_df <- as(association_rules, "data.frame")
+sort_association_rules_df <- association_rules_df %>% arrange(desc(confidence))
+head(sort_association_rules_df)
+
+####  Generating frequent item set
+frequent_itemset <- apriori(association_sale_trans, parameter = list(supp = 0.006, conf = 0.7, target = "frequent itemsets", maxlen = 10))
+frequent_itemset_df <-  as(frequent_itemset, "data.frame")
+sort_frequent_itemset_df <- frequent_itemset_df %>% arrange(desc(support))
+head(sort_frequent_itemset_df)
+freq_vec <- itemFrequency(association_sale_trans, type = "absolute")
+
+freq_df <- data.frame(
+  item  = names(freq_vec),
+  count = as.numeric(freq_vec)
+) %>% arrange(desc(count)) %>% slice_head(n = 10) %>%  mutate(item = reorder(item, count))
+
+ggplot(freq_df, aes(x = item, y = count)) +
+  geom_col(fill = "#2C77B0") +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(title = paste("Top", 10, "Items by Transaction Frequency"),
+       x = NULL,
+       y = "Item frequency") +
+  theme_minimal(base_size = 12)
 
 
-
-## Apriori to create set meals
-
-
-## EOQ
-
-
-## ABC analysis
-
-## K-clusterings
 
 
 
